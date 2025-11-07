@@ -60,6 +60,11 @@
 #include <Arduino_LED_Matrix.h>
 #include <Arduino_Modulino.h>
 
+// Set to 1 for Serial-only bench testing (simulated sensors/relays), 0 for real hardware.
+#ifndef BENCH_TEST
+#define BENCH_TEST 1
+#endif
+
 // ---------- Distance sensor ----------
 VL53L4CD tof(&Wire, -1);      // -1: no XSHUT pin used
 VL53L4CD_Result_t tofResult;
@@ -82,14 +87,22 @@ const uint8_t PIN_GREEN  = 4;
 // ---------- Ped Button (BTN1) ----------
 const uint8_t PIN_PED_BTN   = 8;     // active-LOW, INPUT_PULLUP
 const unsigned long BTN_DEBOUNCE_MS = 40;
+
+#if !BENCH_TEST
 bool btnLastRaw = false;
 unsigned long btnChangeTime = 0;
+#endif
 
 // ---------- Timings (ms) ----------
 unsigned long GREEN_TIME      = 5000;
 unsigned long YELLOW_TIME     = 3000;
 unsigned long COOLDOWN_MS     = 2000;
 unsigned long PED_COUNT_TOTAL = 9000;   // 9 seconds (9..0)
+
+#if BENCH_TEST
+bool benchCarHere = false;
+bool benchPedLatched = false;
+#endif
 
 // ---------- Distance thresholds (mm) ----------
 uint16_t TRIGGER_NEAR_MM = 120;   // car present if < this
@@ -107,7 +120,23 @@ volatile unsigned long carCount = 0;
 // ==========================================================
 // Relay helpers
 // ==========================================================
+#if BENCH_TEST
+const char* relayLabel(uint8_t pin) {
+  if (pin == PIN_RED)    return "RED";
+  if (pin == PIN_YELLOW) return "YELLOW";
+  if (pin == PIN_GREEN)  return "GREEN";
+  return "?";
+}
+#endif
+
 void relayWrite(uint8_t pin, bool on) {
+#if BENCH_TEST
+  Serial.print(F("[BENCH] Relay "));
+  Serial.print(relayLabel(pin));
+  Serial.print(F(" -> "));
+  Serial.println(on ? F("ON") : F("OFF"));
+#endif
+
   digitalWrite(
     pin,
     RELAY_ACTIVE_LOW
@@ -318,6 +347,70 @@ const char* phaseName() {
   return "?";
 }
 
+#if BENCH_TEST
+void printBenchStatus() {
+  Serial.print(F("[BENCH] Phase="));
+  Serial.print(phaseName());
+  Serial.print(F("  carHere="));
+  Serial.print(benchCarHere ? F("YES") : F("NO"));
+  Serial.print(F("  pedQueued="));
+  Serial.print(pedRequestPending ? F("YES") : F("NO"));
+  Serial.print(F("  carCount="));
+  Serial.println(carCount);
+}
+
+void printBenchHelp() {
+  Serial.println(F("[BENCH] Commands:"));
+  Serial.println(F("  c: toggle car presence"));
+  Serial.println(F("  1: car present, 0: car gone"));
+  Serial.println(F("  p: press pedestrian button"));
+  Serial.println(F("  s: show current state summary"));
+  Serial.println(F("  h or ?: show this help"));
+}
+
+void handleBenchSerial() {
+  while (Serial.available()) {
+    char ch = Serial.read();
+    if (ch == '\r' || ch == '\n') continue;
+    switch (ch) {
+      case 'c':
+      case 'C':
+        benchCarHere = !benchCarHere;
+        Serial.print(F("[BENCH] carHere -> "));
+        Serial.println(benchCarHere ? F("YES") : F("NO"));
+        break;
+      case '1':
+        benchCarHere = true;
+        Serial.println(F("[BENCH] carHere -> YES"));
+        break;
+      case '0':
+        benchCarHere = false;
+        Serial.println(F("[BENCH] carHere -> NO"));
+        break;
+      case 'p':
+      case 'P':
+        benchPedLatched = true;
+        Serial.println(F("[BENCH] Ped button press queued"));
+        break;
+      case 's':
+      case 'S':
+        printBenchStatus();
+        break;
+      case 'h':
+      case 'H':
+      case '?':
+        printBenchHelp();
+        break;
+      default:
+        Serial.print(F("[BENCH] Unknown command '"));
+        Serial.print(ch);
+        Serial.println(F("'. Press h for help."));
+        break;
+    }
+  }
+}
+#endif
+
 // Distance presence with hysteresis + debounce
 bool presence(bool got, uint16_t mm) {
   static bool raw = false;
@@ -342,6 +435,13 @@ bool presence(bool got, uint16_t mm) {
   return raw;
 }
 
+#if BENCH_TEST
+bool readPedButtonPressed() {
+  bool pressed = benchPedLatched;
+  benchPedLatched = false;
+  return pressed;
+}
+#else
 // Ped button (debounced, active-LOW)
 bool readPedButtonPressed() {
   bool raw = (digitalRead(PIN_PED_BTN) == LOW);
@@ -358,11 +458,17 @@ bool readPedButtonPressed() {
 
   return debounced;
 }
+#endif
 
 // Phase change
 void setPhase(Phase p) {
   phase  = p;
   tPhase = millis();
+
+#if BENCH_TEST
+  Serial.print(F("[BENCH] Phase -> "));
+  Serial.println(phaseName());
+#endif
 
   switch (p) {
     case PHASE_RED:
@@ -397,8 +503,14 @@ void setPhase(Phase p) {
 // Setup
 // ==========================================================
 void setup() {
-  // Serial optional:
-  // Serial.begin(115200); while (!Serial) {}
+  Serial.begin(115200);
+#if BENCH_TEST
+  unsigned long waitStart = millis();
+  while (!Serial && (millis() - waitStart) < 3000) { /* wait for monitor */ }
+  Serial.println();
+  Serial.println(F("[BENCH] Bench-test mode enabled. Use Serial commands to drive the FSM."));
+  printBenchHelp();
+#endif
 
   pinMode(PIN_RED, OUTPUT);
   pinMode(PIN_YELLOW, OUTPUT);
@@ -413,6 +525,9 @@ void setup() {
   // VL53L4CD init (STM32duino)
   Wire.begin();
 
+#if BENCH_TEST
+  Serial.println(F("[BENCH] Skipping VL53L4CD init (car presence is simulated)."));
+#else
   if (tof.begin() != 0) {
     while (true) { carsYellow(); delay(200); carsRed(); delay(200); }
   }
@@ -424,6 +539,7 @@ void setup() {
   // 33ms timing, continuous ranging
   tof.VL53L4CD_SetRangeTiming(33, 0);
   tof.VL53L4CD_StartRanging();
+#endif
 
   // Wi-Fi AP
   if (WiFi.beginAP(AP_SSID, AP_PASS) != WL_AP_LISTENING) {
@@ -440,6 +556,12 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
+  bool carHere = false;
+
+#if BENCH_TEST
+  handleBenchSerial();
+  carHere = benchCarHere;
+#else
   // 1) Distance read (non-blocking)
   bool     got   = false;
   uint16_t mm    = 0;
@@ -456,11 +578,15 @@ void loop() {
     }
   }
 
-  bool carHere = presence(got, mm);
+  carHere = presence(got, mm);
+#endif
 
   // 2) Ped button: queue request if pressed (unless already in PED)
   if (readPedButtonPressed() && phase != PHASE_PED) {
     pedRequestPending = true;
+#if BENCH_TEST
+    Serial.println(F("[BENCH] Ped call latched (will fire next RED)."));
+#endif
   }
 
   // 3) State machine
