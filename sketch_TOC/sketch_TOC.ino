@@ -2,9 +2,16 @@
 
 ModulinoDistance distanceSensor;
 ModulinoPixels pixels;
+ModulinoButtons buttons;
 
-const int PIXEL_COUNT = 8;
-const int PIXEL_BRIGHTNESS = 25;
+const int PIXEL_COUNT = 9;  // Modulino Pixels is a 3x3 tile
+const uint8_t PIXEL_BRIGHTNESS_RED    = 8;
+const uint8_t PIXEL_BRIGHTNESS_GREEN  = 8;
+const uint8_t PIXEL_BRIGHTNESS_AMBER  = 6;
+
+const uint8_t RED_SEGMENT[]   = {0, 1, 2};      // bottom row
+const uint8_t AMBER_SEGMENT[] = {3, 4, 5};      // middle row
+const uint8_t GREEN_SEGMENT[] = {6, 7, 8};      // top row
 
 enum LightState { LIGHT_RED, LIGHT_GREEN, LIGHT_YELLOW };
 LightState currentState = LIGHT_RED;
@@ -12,24 +19,43 @@ unsigned long stateChangedAt = 0;
 
 unsigned long stateDurationMs(LightState state) {
   switch (state) {
-    case LIGHT_RED:    return 6000; // 6 seconds of red
+    case LIGHT_RED:    return 15000; // 15 seconds of red
     case LIGHT_GREEN:  return 5000; // 5 seconds of green
     case LIGHT_YELLOW: return 2000; // 2 seconds of yellow/amber
   }
   return 4000;
 }
 
+template <size_t N>
+void paintSegment(const uint8_t (&indices)[N], uint8_t r, uint8_t g, uint8_t b, uint8_t brightness) {
+  for (size_t i = 0; i < N; ++i) {
+    if (indices[i] >= PIXEL_COUNT) continue;
+    pixels.set(indices[i], r, g, b, brightness);
+  }
+}
+
+void clearPixels() {
+  for (int i = 0; i < PIXEL_COUNT; ++i) {
+    pixels.set(i, 0, 0, 0, 0);
+  }
+}
+
 void showTrafficLight(LightState state) {
-  int color = RED;
+  clearPixels();
+
   switch (state) {
-    case LIGHT_GREEN:  color = GREEN; break;
-    case LIGHT_YELLOW: color = WHITE; break; // Modulino Pixels lack yellow; white ≈ amber
-    default:           color = RED; break;
+    case LIGHT_GREEN:
+      paintSegment(GREEN_SEGMENT, 0, 255, 0, PIXEL_BRIGHTNESS_GREEN);
+      break;
+    case LIGHT_YELLOW:
+      paintSegment(AMBER_SEGMENT, 255, 110, 0, PIXEL_BRIGHTNESS_AMBER);
+      break;
+    case LIGHT_RED:
+    default:
+      paintSegment(RED_SEGMENT, 255, 0, 0, PIXEL_BRIGHTNESS_RED);
+      break;
   }
 
-  for (int i = 0; i < PIXEL_COUNT; i++) {
-    pixels.set(i, color, PIXEL_BRIGHTNESS);
-  }
   pixels.show();
 }
 
@@ -58,6 +84,18 @@ void stopWithError(const char* message) {
   }
 }
 
+void forceGreenPhase(const char* source) {
+  if (currentState != LIGHT_RED) {
+    return;
+  }
+
+  Serial.print(source);
+  Serial.println(": button request -> forcing GREEN phase");
+  currentState = LIGHT_GREEN;
+  stateChangedAt = millis();
+  showTrafficLight(currentState);
+}
+
 void setup() {
   Serial.begin(115200);
   unsigned long serialWaitStart = millis();
@@ -77,11 +115,15 @@ void setup() {
   if (!pixels.begin()) {
     stopWithError("Pixels tile not detected. Check Qwiic connections.");
   }
+  if (!buttons.begin()) {
+    stopWithError("Buttons tile not detected. Check Qwiic connections.");
+  }
+  buttons.setLeds(true, true, true);
 
   stateChangedAt = millis();
   showTrafficLight(currentState);
   Serial.println("Tiles initialized. Pixels are cycling Red → Green → Yellow.");
-  Serial.println("Distance readings continue below.");
+  Serial.println("Distance + button events stream below.");
 }
 
 void serviceDistanceSensor() {
@@ -95,9 +137,26 @@ void serviceDistanceSensor() {
   Serial.println(" mm");
 }
 
+void serviceButtons() {
+  if (!buttons.update()) {
+    return;
+  }
+
+  if (buttons.isPressed('A')) {
+    forceGreenPhase("Button A");
+  }
+  if (buttons.isPressed('B')) {
+    forceGreenPhase("Button B");
+  }
+  if (buttons.isPressed('C')) {
+    forceGreenPhase("Button C");
+  }
+}
+
 void loop() {
   unsigned long now = millis();
   updateTrafficLight(now);
   serviceDistanceSensor();
+  serviceButtons();
   delay(20);
 }
