@@ -12,6 +12,7 @@ const uint8_t PIXEL_BRIGHTNESS_AMBER  = 6;
 const uint8_t RED_SEGMENT[]   = {0, 1, 2};      // bottom row
 const uint8_t AMBER_SEGMENT[] = {3, 4, 5};      // middle row
 const uint8_t GREEN_SEGMENT[] = {6, 7, 8};      // top row
+const int FORCE_GREEN_THRESHOLD_MM = 20;        // force green when an object is this close
 
 enum LightState { LIGHT_RED, LIGHT_GREEN, LIGHT_YELLOW };
 LightState currentState = LIGHT_RED;
@@ -59,21 +60,49 @@ void showTrafficLight(LightState state) {
   pixels.show();
 }
 
-void advanceTrafficLight() {
-  if (currentState == LIGHT_RED) {
-    currentState = LIGHT_GREEN;
-  } else if (currentState == LIGHT_GREEN) {
-    currentState = LIGHT_YELLOW;
-  } else {
-    currentState = LIGHT_RED;
+const char* stateName(LightState state) {
+  switch (state) {
+    case LIGHT_GREEN:  return "GREEN";
+    case LIGHT_YELLOW: return "YELLOW";
+    case LIGHT_RED:
+    default:           return "RED";
   }
+}
+
+void setPhase(LightState next, const char* reason) {
+  currentState = next;
   stateChangedAt = millis();
   showTrafficLight(currentState);
+
+  Serial.print(F("[STATE] "));
+  if (reason != nullptr) {
+    Serial.print(reason);
+    Serial.print(F(" -> "));
+  }
+  Serial.println(stateName(currentState));
+}
+
+void advanceTrafficLight() {
+  LightState next;
+  if (currentState == LIGHT_RED) {
+    next = LIGHT_GREEN;
+  } else if (currentState == LIGHT_GREEN) {
+    next = LIGHT_YELLOW;
+  } else {
+    next = LIGHT_RED;
+  }
+  setPhase(next, "Timer");
 }
 
 void updateTrafficLight(unsigned long now) {
   if (now - stateChangedAt >= stateDurationMs(currentState)) {
     advanceTrafficLight();
+  }
+}
+
+void requestGreenPhase(const char* source) {
+  if (currentState == LIGHT_RED) {
+    setPhase(LIGHT_GREEN, source);
   }
 }
 
@@ -84,20 +113,8 @@ void stopWithError(const char* message) {
   }
 }
 
-void forceGreenPhase(const char* source) {
-  if (currentState != LIGHT_RED) {
-    return;
-  }
-
-  Serial.print(source);
-  Serial.println(": button request -> forcing GREEN phase");
-  currentState = LIGHT_GREEN;
-  stateChangedAt = millis();
-  showTrafficLight(currentState);
-}
-
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
   unsigned long serialWaitStart = millis();
   while (!Serial && millis() - serialWaitStart < 3000) {
     delay(10);
@@ -120,8 +137,7 @@ void setup() {
   }
   buttons.setLeds(true, true, true);
 
-  stateChangedAt = millis();
-  showTrafficLight(currentState);
+  setPhase(LIGHT_RED, "Startup");
   Serial.println("Tiles initialized. Pixels are cycling Red → Green → Yellow.");
   Serial.println("Distance + button events stream below.");
 }
@@ -134,7 +150,15 @@ void serviceDistanceSensor() {
   int measure = distanceSensor.get();
   Serial.print("Distance: ");
   Serial.print(measure);
-  Serial.println(" mm");
+  bool tooClose = (measure > 0 && measure <= FORCE_GREEN_THRESHOLD_MM);
+  if (tooClose) {
+    Serial.print(" mm  <-- within ");
+    Serial.print(FORCE_GREEN_THRESHOLD_MM);
+    Serial.println(" mm (requesting GREEN)");
+    requestGreenPhase("Distance sensor");
+  } else {
+    Serial.println(" mm");
+  }
 }
 
 void serviceButtons() {
@@ -143,13 +167,13 @@ void serviceButtons() {
   }
 
   if (buttons.isPressed('A')) {
-    forceGreenPhase("Button A");
+    requestGreenPhase("Button A");
   }
   if (buttons.isPressed('B')) {
-    forceGreenPhase("Button B");
+    requestGreenPhase("Button B");
   }
   if (buttons.isPressed('C')) {
-    forceGreenPhase("Button C");
+    requestGreenPhase("Button C");
   }
 }
 
