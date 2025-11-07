@@ -1,8 +1,126 @@
 #include <Arduino_Modulino.h>
+#include <Arduino_LED_Matrix.h>
 
 ModulinoDistance distanceSensor;
 ModulinoPixels pixels;
 ModulinoButtons buttons;
+ArduinoLEDMatrix matrix;
+uint8_t matrixBuffer[8][12];
+
+const uint8_t WALK_ICON[8][12] = {
+  {0,0,0,1,1,1,1,0,0,0,0,0},
+  {0,0,0,1,0,0,1,0,0,0,0,0},
+  {0,0,0,1,1,1,1,0,0,0,0,0},
+  {0,0,1,1,1,1,1,1,0,0,0,0},
+  {0,0,0,0,1,1,0,0,0,0,0,0},
+  {0,0,0,0,1,1,0,0,1,0,0,0},
+  {0,0,0,1,1,1,0,1,0,0,0,0},
+  {0,0,1,0,0,0,1,0,0,0,0,0}
+};
+
+const uint8_t STOP_ICON[8][12] = {
+  {0,0,1,1,1,1,1,1,1,0,0,0},
+  {0,1,1,1,1,1,1,1,1,1,0,0},
+  {0,1,1,1,1,1,1,1,1,1,0,0},
+  {0,1,1,1,1,1,1,1,1,1,0,0},
+  {0,0,1,1,1,1,1,1,1,0,0,0},
+  {0,0,1,1,1,1,1,1,1,0,0,0},
+  {0,0,1,1,1,1,1,1,1,0,0,0},
+  {0,0,1,1,1,1,1,1,1,0,0,0}
+};
+
+const uint8_t DIGIT_FONT[10][7][5] = {
+  { // 0
+    {1,1,1,1,1},
+    {1,0,0,0,1},
+    {1,0,0,0,1},
+    {1,0,0,0,1},
+    {1,0,0,0,1},
+    {1,0,0,0,1},
+    {1,1,1,1,1}
+  },
+  { // 1
+    {0,0,1,0,0},
+    {0,1,1,0,0},
+    {0,0,1,0,0},
+    {0,0,1,0,0},
+    {0,0,1,0,0},
+    {0,0,1,0,0},
+    {0,1,1,1,0}
+  },
+  { // 2
+    {1,1,1,1,1},
+    {0,0,0,0,1},
+    {0,0,0,0,1},
+    {1,1,1,1,1},
+    {1,0,0,0,0},
+    {1,0,0,0,0},
+    {1,1,1,1,1}
+  },
+  { // 3
+    {1,1,1,1,1},
+    {0,0,0,0,1},
+    {0,0,0,0,1},
+    {0,1,1,1,1},
+    {0,0,0,0,1},
+    {0,0,0,0,1},
+    {1,1,1,1,1}
+  },
+  { // 4
+    {1,0,0,0,1},
+    {1,0,0,0,1},
+    {1,0,0,0,1},
+    {1,1,1,1,1},
+    {0,0,0,0,1},
+    {0,0,0,0,1},
+    {0,0,0,0,1}
+  },
+  { // 5
+    {1,1,1,1,1},
+    {1,0,0,0,0},
+    {1,0,0,0,0},
+    {1,1,1,1,1},
+    {0,0,0,0,1},
+    {0,0,0,0,1},
+    {1,1,1,1,1}
+  },
+  { // 6
+    {1,1,1,1,1},
+    {1,0,0,0,0},
+    {1,0,0,0,0},
+    {1,1,1,1,1},
+    {1,0,0,0,1},
+    {1,0,0,0,1},
+    {1,1,1,1,1}
+  },
+  { // 7
+    {1,1,1,1,1},
+    {0,0,0,0,1},
+    {0,0,0,1,0},
+    {0,0,1,0,0},
+    {0,1,0,0,0},
+    {0,1,0,0,0},
+    {0,1,0,0,0}
+  },
+  { // 8
+    {1,1,1,1,1},
+    {1,0,0,0,1},
+    {1,0,0,0,1},
+    {1,1,1,1,1},
+    {1,0,0,0,1},
+    {1,0,0,0,1},
+    {1,1,1,1,1}
+  },
+  { // 9
+    {1,1,1,1,1},
+    {1,0,0,0,1},
+    {1,0,0,0,1},
+    {1,1,1,1,1},
+    {0,0,0,0,1},
+    {0,0,0,0,1},
+    {1,1,1,1,1}
+  }
+};
 
 const int PIXEL_COUNT = 9;  // Modulino Pixels is a 3x3 tile
 const uint8_t PIXEL_BRIGHTNESS_RED    = 8;
@@ -13,15 +131,20 @@ const uint8_t RED_SEGMENT[]   = {0, 1, 2};      // bottom row
 const uint8_t AMBER_SEGMENT[] = {3, 4, 5};      // middle row
 const uint8_t GREEN_SEGMENT[] = {6, 7, 8};      // top row
 const int FORCE_GREEN_THRESHOLD_MM = 20;        // force green when an object is this close
+const unsigned long WALK_SOLID_MS = 3000;
+const int WALK_COUNTDOWN_SECONDS = 12;
 
 enum LightState { LIGHT_RED, LIGHT_GREEN, LIGHT_YELLOW };
 LightState currentState = LIGHT_RED;
 unsigned long stateChangedAt = 0;
+enum PedDisplayMode { PED_STOP, PED_WALK, PED_COUNTDOWN };
+PedDisplayMode pedDisplayMode = PED_COUNTDOWN;
+int lastCountdownValue = -1;
 
 unsigned long stateDurationMs(LightState state) {
   switch (state) {
     case LIGHT_RED:    return 15000; // 15 seconds of red
-    case LIGHT_GREEN:  return 5000; // 5 seconds of green
+    case LIGHT_GREEN:  return 15000; // 15 seconds of green
     case LIGHT_YELLOW: return 2000; // 2 seconds of yellow/amber
   }
   return 4000;
@@ -38,6 +161,84 @@ void paintSegment(const uint8_t (&indices)[N], uint8_t r, uint8_t g, uint8_t b, 
 void clearPixels() {
   for (int i = 0; i < PIXEL_COUNT; ++i) {
     pixels.set(i, 0, 0, 0, 0);
+  }
+}
+
+void copyIconToBuffer(const uint8_t icon[8][12]) {
+  for (int r = 0; r < 8; ++r) {
+    for (int c = 0; c < 12; ++c) {
+      matrixBuffer[r][c] = icon[r][c];
+    }
+  }
+}
+
+void renderIcon(const uint8_t icon[8][12]) {
+  copyIconToBuffer(icon);
+  matrix.renderBitmap(matrixBuffer, 8, 12);
+}
+
+void clearMatrixBuffer() {
+  for (int r = 0; r < 8; ++r) {
+    for (int c = 0; c < 12; ++c) {
+      matrixBuffer[r][c] = 0;
+    }
+  }
+}
+
+void drawDigitToBuffer(int digit, int colOffset) {
+  if (digit < 0 || digit > 9) return;
+  for (int r = 0; r < 7; ++r) {
+    for (int c = 0; c < 5; ++c) {
+      int rr = r + 1; // vertical centering
+      int cc = colOffset + c;
+      if (cc >= 0 && cc < 12) {
+        matrixBuffer[rr][cc] = DIGIT_FONT[digit][r][c];
+      }
+    }
+  }
+}
+
+void showCountdownNumber(int value) {
+  clearMatrixBuffer();
+  if (value >= 10) {
+    int tens = value / 10;
+    int ones = value % 10;
+    drawDigitToBuffer(tens, 0);
+    drawDigitToBuffer(ones, 6);
+  } else {
+    drawDigitToBuffer(value, 3);
+  }
+  matrix.renderBitmap(matrixBuffer, 8, 12);
+}
+
+void updatePedestrianDisplay(unsigned long now) {
+  if (currentState != LIGHT_GREEN) {
+    if (pedDisplayMode != PED_STOP) {
+      renderIcon(STOP_ICON);
+      pedDisplayMode = PED_STOP;
+      lastCountdownValue = -1;
+    }
+    return;
+  }
+
+  unsigned long elapsed = now - stateChangedAt;
+  if (elapsed < WALK_SOLID_MS) {
+    if (pedDisplayMode != PED_WALK) {
+      renderIcon(WALK_ICON);
+      pedDisplayMode = PED_WALK;
+      lastCountdownValue = WALK_COUNTDOWN_SECONDS;
+    }
+    return;
+  }
+
+  unsigned long countdownElapsed = elapsed - WALK_SOLID_MS;
+  int remaining = WALK_COUNTDOWN_SECONDS - (int)(countdownElapsed / 1000);
+  if (remaining < 0) remaining = 0;
+
+  if (pedDisplayMode != PED_COUNTDOWN || remaining != lastCountdownValue) {
+    showCountdownNumber(remaining);
+    pedDisplayMode = PED_COUNTDOWN;
+    lastCountdownValue = remaining;
   }
 }
 
@@ -73,6 +274,7 @@ void setPhase(LightState next, const char* reason) {
   currentState = next;
   stateChangedAt = millis();
   showTrafficLight(currentState);
+  updatePedestrianDisplay(stateChangedAt);
 
   Serial.print(F("[STATE] "));
   if (reason != nullptr) {
@@ -119,6 +321,8 @@ void setup() {
   while (!Serial && millis() - serialWaitStart < 3000) {
     delay(10);
   }
+
+  matrix.begin();
 
   Serial.println();
   Serial.println("Modulino Distance + Pixels traffic light test");
@@ -182,5 +386,6 @@ void loop() {
   updateTrafficLight(now);
   serviceDistanceSensor();
   serviceButtons();
+  updatePedestrianDisplay(now);
   delay(20);
 }
