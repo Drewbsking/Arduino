@@ -97,9 +97,9 @@ uint16_t CLEAR_FAR_MM    = 200;   // car gone if >= this
 unsigned long DEBOUNCE_MS = 60;   // presence debounce
 
 // ---------- State machine ----------
-enum Phase { RED, PED, GREEN, YELLOW, COOLDOWN };
+enum Phase { PHASE_RED, PHASE_PED, PHASE_GREEN, PHASE_YELLOW, PHASE_COOLDOWN };
 
-Phase         phase             = RED;
+Phase         phase             = PHASE_RED;
 unsigned long tPhase            = 0;
 bool          pedRequestPending = false;
 volatile unsigned long carCount = 0;
@@ -141,10 +141,8 @@ void drawDontWalkX() {
   clearFrame();
   // Big X from corners across 8x12
   for (int r = 0; r < 8; r++) {
-    int c1 = r;          // \
-    int c2 = 11 - r;     // /
-    if (c1 >= 0 && c1 < 12) setPixel(r, c1);
-    if (c2 >= 0 && c2 < 12) setPixel(r, c2);
+    setPixel(r, r);
+    setPixel(r, 11 - r);
   }
   matrix.renderBitmap(frame, 8, 12);
 }
@@ -311,11 +309,11 @@ void showDontWalk() { drawDontWalkX(); }
 // ==========================================================
 const char* phaseName() {
   switch (phase) {
-    case RED:      return "RED";
-    case PED:      return "PED (Countdown)";
-    case GREEN:    return "GREEN";
-    case YELLOW:   return "YELLOW";
-    case COOLDOWN: return "RED (Cooldown)";
+    case PHASE_RED:      return "RED";
+    case PHASE_PED:      return "PED (Countdown)";
+    case PHASE_GREEN:    return "GREEN";
+    case PHASE_YELLOW:   return "YELLOW";
+    case PHASE_COOLDOWN: return "RED (Cooldown)";
   }
   return "?";
 }
@@ -367,28 +365,28 @@ void setPhase(Phase p) {
   tPhase = millis();
 
   switch (p) {
-    case RED:
+    case PHASE_RED:
       carsRed();
       showDontWalk();
       break;
 
-    case PED:
+    case PHASE_PED:
       carsRed();
       showWalk();    // numbers will override in loop
       break;
 
-    case GREEN:
+    case PHASE_GREEN:
       carsGreen();
       showDontWalk();
       carCount++;
       break;
 
-    case YELLOW:
+    case PHASE_YELLOW:
       carsYellow();
       showDontWalk();
       break;
 
-    case COOLDOWN:
+    case PHASE_COOLDOWN:
       carsRed();
       showDontWalk();
       break;
@@ -433,7 +431,7 @@ void setup() {
   }
   server.begin();
 
-  setPhase(RED);
+  setPhase(PHASE_RED);
 }
 
 // ==========================================================
@@ -461,28 +459,28 @@ void loop() {
   bool carHere = presence(got, mm);
 
   // 2) Ped button: queue request if pressed (unless already in PED)
-  if (readPedButtonPressed() && phase != PED) {
+  if (readPedButtonPressed() && phase != PHASE_PED) {
     pedRequestPending = true;
   }
 
   // 3) State machine
   switch (phase) {
 
-    case RED:
+    case PHASE_RED:
       if (pedRequestPending) {
         pedRequestPending = false;
-        setPhase(PED);             // start ped phase
+        setPhase(PHASE_PED);             // start ped phase
       } else if (carHere) {
-        setPhase(GREEN);           // give green to car
+        setPhase(PHASE_GREEN);           // give green to car
       }
       break;
 
-    case PED: {
+    case PHASE_PED: {
       unsigned long elapsed = now - tPhase;
       if (elapsed >= PED_COUNT_TOTAL) {
         // Countdown finished
-        if (carHere) setPhase(GREEN);
-        else         setPhase(RED);
+        if (carHere) setPhase(PHASE_GREEN);
+        else         setPhase(PHASE_RED);
       } else {
         int remaining = (int)((PED_COUNT_TOTAL - elapsed + 999) / 1000); // ceil
         if (remaining < 0) remaining = 0;
@@ -491,21 +489,21 @@ void loop() {
       }
     } break;
 
-    case GREEN:
+    case PHASE_GREEN:
       if (now - tPhase >= GREEN_TIME) {
-        setPhase(YELLOW);
+        setPhase(PHASE_YELLOW);
       }
       break;
 
-    case YELLOW:
+    case PHASE_YELLOW:
       if (now - tPhase >= YELLOW_TIME) {
-        setPhase(COOLDOWN);
+        setPhase(PHASE_COOLDOWN);
       }
       break;
 
-    case COOLDOWN:
+    case PHASE_COOLDOWN:
       if (now - tPhase >= COOLDOWN_MS) {
-        setPhase(RED);
+        setPhase(PHASE_RED);
       }
       break;
   }
