@@ -58,7 +58,7 @@
 #include <Wire.h>
 #include <WiFiS3.h>
 #include <Arduino_LED_Matrix.h>
-#include <vl53l4cd_class.h>   // STM32duino VL53L4CD
+#include <Arduino_Modulino.h>
 
 // ---------- Distance sensor ----------
 VL53L4CD tof(&Wire, -1);      // -1: no XSHUT pin used
