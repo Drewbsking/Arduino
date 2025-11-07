@@ -82,7 +82,7 @@ const uint8_t PIN_GREEN  = 4;
 // ---------- Ped Button (BTN1) ----------
 const uint8_t PIN_PED_BTN   = 8;     // active-LOW, INPUT_PULLUP
 const unsigned long BTN_DEBOUNCE_MS = 40;
-bool btnPrev = false;
+bool btnLastRaw = false;
 unsigned long btnChangeTime = 0;
 
 // ---------- Timings (ms) ----------
@@ -347,14 +347,18 @@ bool presence(bool got, uint16_t mm) {
 // Ped button (debounced, active-LOW)
 bool readPedButtonPressed() {
   bool raw = (digitalRead(PIN_PED_BTN) == LOW);
-  if (raw != btnPrev) {
+  static bool debounced = false;
+
+  if (raw != btnLastRaw) {
     btnChangeTime = millis();
-    btnPrev = raw;
+    btnLastRaw = raw;
   }
+
   if (millis() - btnChangeTime >= BTN_DEBOUNCE_MS) {
-    return raw;
+    debounced = btnLastRaw;
   }
-  return raw;
+
+  return debounced;
 }
 
 // Phase change
