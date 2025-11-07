@@ -130,7 +130,8 @@ const uint8_t PIXEL_BRIGHTNESS_AMBER  = 6;
 const uint8_t RED_SEGMENT[]   = {0, 1, 2};      // bottom row
 const uint8_t AMBER_SEGMENT[] = {3, 4, 5};      // middle row
 const uint8_t GREEN_SEGMENT[] = {6, 7, 8};      // top row
-const int FORCE_GREEN_THRESHOLD_MM = 20;        // force green when an object is this close
+const int FORCE_GREEN_THRESHOLD_MM = 30;        // force green when an object is this close
+const unsigned long MIN_RED_DURATION_MS = 7000; // minimum time red must stay on before allowing green request
 const unsigned long WALK_SOLID_MS = 3000;
 const int WALK_COUNTDOWN_SECONDS = 12;
 
@@ -140,6 +141,10 @@ unsigned long stateChangedAt = 0;
 enum PedDisplayMode { PED_STOP, PED_WALK, PED_COUNTDOWN };
 PedDisplayMode pedDisplayMode = PED_COUNTDOWN;
 int lastCountdownValue = -1;
+
+enum CarState { NO_CAR, CAR_PRESENT };
+CarState carState = NO_CAR;
+unsigned long carCount = 0;
 
 unsigned long stateDurationMs(LightState state) {
   switch (state) {
@@ -297,12 +302,36 @@ void advanceTrafficLight() {
 }
 
 void updateTrafficLight(unsigned long now) {
+  // Green stays on indefinitely until a car arrives
+  if (currentState == LIGHT_GREEN) {
+    return;
+  }
+
   if (now - stateChangedAt >= stateDurationMs(currentState)) {
     advanceTrafficLight();
   }
 }
 
 void requestGreenPhase(const char* source) {
+  if (currentState != LIGHT_RED) {
+    return;  // Only grant requests when red
+  }
+
+  unsigned long elapsed = millis() - stateChangedAt;
+  if (elapsed >= MIN_RED_DURATION_MS) {
+    setPhase(LIGHT_GREEN, source);
+  } else {
+    Serial.print(F("[REQUEST] Green request from "));
+    Serial.print(source);
+    Serial.print(F(" denied - red minimum not met ("));
+    Serial.print(elapsed / 1000);
+    Serial.print(F("s / "));
+    Serial.print(MIN_RED_DURATION_MS / 1000);
+    Serial.println(F("s)"));
+  }
+}
+
+void forceGreenPhase(const char* source) {
   if (currentState == LIGHT_RED) {
     setPhase(LIGHT_GREEN, source);
   }
@@ -352,16 +381,30 @@ void serviceDistanceSensor() {
   }
 
   int measure = distanceSensor.get();
-  Serial.print("Distance: ");
-  Serial.print(measure);
-  bool tooClose = (measure > 0 && measure <= FORCE_GREEN_THRESHOLD_MM);
-  if (tooClose) {
-    Serial.print(" mm  <-- within ");
-    Serial.print(FORCE_GREEN_THRESHOLD_MM);
-    Serial.println(" mm (requesting GREEN)");
-    requestGreenPhase("Distance sensor");
-  } else {
-    Serial.println(" mm");
+  bool carPresent = (measure > 0 && measure <= FORCE_GREEN_THRESHOLD_MM);
+
+  // Detect state transitions
+  if (carPresent && carState == NO_CAR) {
+    // Car arrival detected
+    carState = CAR_PRESENT;
+    Serial.print(F("[CAR] Arrival detected (distance: "));
+    Serial.print(measure);
+    Serial.println(F(" mm)"));
+
+    // If light is green, transition to yellow (car is passing through)
+    // Otherwise, request green (car is waiting at red)
+    if (currentState == LIGHT_GREEN) {
+      setPhase(LIGHT_YELLOW, "Car passing");
+    } else {
+      requestGreenPhase("Car arrival");
+    }
+  }
+  else if (!carPresent && carState == CAR_PRESENT) {
+    // Car departure detected
+    carState = NO_CAR;
+    carCount++;
+    Serial.print(F("[CAR] Departure detected - Total cars: "));
+    Serial.println(carCount);
   }
 }
 
@@ -371,13 +414,13 @@ void serviceButtons() {
   }
 
   if (buttons.isPressed('A')) {
-    requestGreenPhase("Button A");
+    forceGreenPhase("Button A");
   }
   if (buttons.isPressed('B')) {
-    requestGreenPhase("Button B");
+    forceGreenPhase("Button B");
   }
   if (buttons.isPressed('C')) {
-    requestGreenPhase("Button C");
+    forceGreenPhase("Button C");
   }
 }
 
