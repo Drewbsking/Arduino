@@ -1,5 +1,6 @@
 #include <Arduino_Modulino.h>
 #include <Arduino_LED_Matrix.h>
+#include <limits.h>
 
 ModulinoDistance distanceSensor;
 ModulinoPixels pixels;
@@ -122,21 +123,33 @@ const uint8_t DIGIT_FONT[10][7][5] = {
   }
 };
 
-const int PIXEL_COUNT = 9;  // Modulino Pixels is a 3x3 tile
+const int PIXEL_COUNT = 8;  // 8 LED vertical column
 const uint8_t PIXEL_BRIGHTNESS_RED    = 8;
 const uint8_t PIXEL_BRIGHTNESS_GREEN  = 8;
 const uint8_t PIXEL_BRIGHTNESS_AMBER  = 6;
 
-const uint8_t RED_SEGMENT[]   = {0, 1, 2};      // bottom row
-const uint8_t AMBER_SEGMENT[] = {3, 4, 5};      // middle row
-const uint8_t GREEN_SEGMENT[] = {6, 7, 8};      // top row
+// Signal A - East/West (top 3 LEDs)
+const uint8_t SIGNAL_A_RED    = 7;
+const uint8_t SIGNAL_A_YELLOW = 6;
+const uint8_t SIGNAL_A_GREEN  = 5;
+
+// Signal B - North (bottom 3 LEDs)
+const uint8_t SIGNAL_B_RED    = 2;
+const uint8_t SIGNAL_B_YELLOW = 1;
+const uint8_t SIGNAL_B_GREEN  = 0;
 const int FORCE_GREEN_THRESHOLD_MM = 30;        // force green when an object is this close
 const unsigned long MIN_RED_DURATION_MS = 7000; // minimum time red must stay on before allowing green request
 const unsigned long WALK_SOLID_MS = 3000;
 const int WALK_COUNTDOWN_SECONDS = 12;
 
-enum LightState { LIGHT_RED, LIGHT_GREEN, LIGHT_YELLOW };
-LightState currentState = LIGHT_RED;
+enum LightState {
+  ALL_RED,           // Both signals red
+  A_GREEN_B_RED,     // Signal A green, Signal B red
+  A_YELLOW_B_RED,    // Signal A yellow, Signal B red
+  A_RED_B_GREEN,     // Signal A red, Signal B green
+  A_RED_B_YELLOW     // Signal A red, Signal B yellow
+};
+LightState currentState = ALL_RED;
 unsigned long stateChangedAt = 0;
 enum PedDisplayMode { PED_STOP, PED_WALK, PED_COUNTDOWN };
 PedDisplayMode pedDisplayMode = PED_COUNTDOWN;
@@ -145,22 +158,17 @@ int lastCountdownValue = -1;
 enum CarState { NO_CAR, CAR_PRESENT };
 CarState carState = NO_CAR;
 unsigned long carCount = 0;
+bool northGreenNext = false;  // Track which direction gets green after ALL_RED
 
 unsigned long stateDurationMs(LightState state) {
   switch (state) {
-    case LIGHT_RED:    return 15000; // 15 seconds of red
-    case LIGHT_GREEN:  return 15000; // 15 seconds of green
-    case LIGHT_YELLOW: return 2000; // 2 seconds of yellow/amber
+    case ALL_RED:        return 2000;  // 2 seconds all red
+    case A_GREEN_B_RED:  return ULONG_MAX; // Green stays on until car arrives
+    case A_YELLOW_B_RED: return 2000;  // 2 seconds yellow
+    case A_RED_B_GREEN:  return ULONG_MAX; // Green stays on until car arrives
+    case A_RED_B_YELLOW: return 2000;  // 2 seconds yellow
   }
-  return 4000;
-}
-
-template <size_t N>
-void paintSegment(const uint8_t (&indices)[N], uint8_t r, uint8_t g, uint8_t b, uint8_t brightness) {
-  for (size_t i = 0; i < N; ++i) {
-    if (indices[i] >= PIXEL_COUNT) continue;
-    pixels.set(indices[i], r, g, b, brightness);
-  }
+  return 2000;
 }
 
 void clearPixels() {
@@ -217,7 +225,8 @@ void showCountdownNumber(int value) {
 }
 
 void updatePedestrianDisplay(unsigned long now) {
-  if (currentState != LIGHT_GREEN) {
+  // Show WALK when Signal A is green, STOP otherwise
+  if (currentState != A_GREEN_B_RED) {
     if (pedDisplayMode != PED_STOP) {
       renderIcon(STOP_ICON);
       pedDisplayMode = PED_STOP;
@@ -251,15 +260,29 @@ void showTrafficLight(LightState state) {
   clearPixels();
 
   switch (state) {
-    case LIGHT_GREEN:
-      paintSegment(GREEN_SEGMENT, 0, 255, 0, PIXEL_BRIGHTNESS_GREEN);
+    case ALL_RED:
+      pixels.set(SIGNAL_A_RED, 255, 0, 0, PIXEL_BRIGHTNESS_RED);
+      pixels.set(SIGNAL_B_RED, 255, 0, 0, PIXEL_BRIGHTNESS_RED);
       break;
-    case LIGHT_YELLOW:
-      paintSegment(AMBER_SEGMENT, 255, 110, 0, PIXEL_BRIGHTNESS_AMBER);
+
+    case A_GREEN_B_RED:
+      pixels.set(SIGNAL_A_GREEN, 0, 255, 0, PIXEL_BRIGHTNESS_GREEN);
+      pixels.set(SIGNAL_B_RED, 255, 0, 0, PIXEL_BRIGHTNESS_RED);
       break;
-    case LIGHT_RED:
-    default:
-      paintSegment(RED_SEGMENT, 255, 0, 0, PIXEL_BRIGHTNESS_RED);
+
+    case A_YELLOW_B_RED:
+      pixels.set(SIGNAL_A_YELLOW, 255, 110, 0, PIXEL_BRIGHTNESS_AMBER);
+      pixels.set(SIGNAL_B_RED, 255, 0, 0, PIXEL_BRIGHTNESS_RED);
+      break;
+
+    case A_RED_B_GREEN:
+      pixels.set(SIGNAL_A_RED, 255, 0, 0, PIXEL_BRIGHTNESS_RED);
+      pixels.set(SIGNAL_B_GREEN, 0, 255, 0, PIXEL_BRIGHTNESS_GREEN);
+      break;
+
+    case A_RED_B_YELLOW:
+      pixels.set(SIGNAL_A_RED, 255, 0, 0, PIXEL_BRIGHTNESS_RED);
+      pixels.set(SIGNAL_B_YELLOW, 255, 110, 0, PIXEL_BRIGHTNESS_AMBER);
       break;
   }
 
@@ -268,10 +291,12 @@ void showTrafficLight(LightState state) {
 
 const char* stateName(LightState state) {
   switch (state) {
-    case LIGHT_GREEN:  return "GREEN";
-    case LIGHT_YELLOW: return "YELLOW";
-    case LIGHT_RED:
-    default:           return "RED";
+    case ALL_RED:        return "ALL RED";
+    case A_GREEN_B_RED:  return "E/W:GREEN N:RED";
+    case A_YELLOW_B_RED: return "E/W:YELLOW N:RED";
+    case A_RED_B_GREEN:  return "E/W:RED N:GREEN";
+    case A_RED_B_YELLOW: return "E/W:RED N:YELLOW";
+    default:             return "UNKNOWN";
   }
 }
 
@@ -291,19 +316,40 @@ void setPhase(LightState next, const char* reason) {
 
 void advanceTrafficLight() {
   LightState next;
-  if (currentState == LIGHT_RED) {
-    next = LIGHT_GREEN;
-  } else if (currentState == LIGHT_GREEN) {
-    next = LIGHT_YELLOW;
-  } else {
-    next = LIGHT_RED;
+  switch (currentState) {
+    case ALL_RED:
+      // Give green to whichever direction is waiting
+      if (northGreenNext) {
+        next = A_RED_B_GREEN;  // North gets green
+        northGreenNext = false;
+      } else {
+        next = A_GREEN_B_RED;  // E/W gets green (default)
+      }
+      break;
+    case A_GREEN_B_RED:
+      next = A_YELLOW_B_RED;
+      break;
+    case A_YELLOW_B_RED:
+      next = ALL_RED;
+      northGreenNext = true;  // North gets green next
+      break;
+    case A_RED_B_GREEN:
+      next = A_RED_B_YELLOW;
+      break;
+    case A_RED_B_YELLOW:
+      next = ALL_RED;
+      northGreenNext = false;  // E/W gets green next (back to default)
+      break;
+    default:
+      next = ALL_RED;
+      break;
   }
   setPhase(next, "Timer");
 }
 
 void updateTrafficLight(unsigned long now) {
-  // Green stays on indefinitely until a car arrives
-  if (currentState == LIGHT_GREEN) {
+  // Green phases stay on indefinitely until a car arrives
+  if (currentState == A_GREEN_B_RED || currentState == A_RED_B_GREEN) {
     return;
   }
 
@@ -313,13 +359,14 @@ void updateTrafficLight(unsigned long now) {
 }
 
 void requestGreenPhase(const char* source) {
-  if (currentState != LIGHT_RED) {
-    return;  // Only grant requests when red
+  // Only grant requests when Signal A is red (ALL_RED or A_RED_B_GREEN states)
+  if (currentState != ALL_RED && currentState != A_RED_B_GREEN && currentState != A_RED_B_YELLOW) {
+    return;
   }
 
   unsigned long elapsed = millis() - stateChangedAt;
   if (elapsed >= MIN_RED_DURATION_MS) {
-    setPhase(LIGHT_GREEN, source);
+    setPhase(A_GREEN_B_RED, source);
   } else {
     Serial.print(F("[REQUEST] Green request from "));
     Serial.print(source);
@@ -332,8 +379,9 @@ void requestGreenPhase(const char* source) {
 }
 
 void forceGreenPhase(const char* source) {
-  if (currentState == LIGHT_RED) {
-    setPhase(LIGHT_GREEN, source);
+  // Force Signal A to green if it's currently red
+  if (currentState == ALL_RED || currentState == A_RED_B_GREEN || currentState == A_RED_B_YELLOW) {
+    setPhase(A_GREEN_B_RED, source);
   }
 }
 
@@ -370,8 +418,9 @@ void setup() {
   }
   buttons.setLeds(true, true, true);
 
-  setPhase(LIGHT_RED, "Startup");
-  Serial.println("Tiles initialized. Pixels are cycling Red → Green → Yellow.");
+  setPhase(A_GREEN_B_RED, "Startup");
+  Serial.println("Tiles initialized. Two-phase traffic signal active.");
+  Serial.println("E/W signal is main road (default green). N signal actuated by sensor.");
   Serial.println("Distance + button events stream below.");
 }
 
@@ -385,26 +434,28 @@ void serviceDistanceSensor() {
 
   // Detect state transitions
   if (carPresent && carState == NO_CAR) {
-    // Car arrival detected
+    // North car arrival detected
     carState = CAR_PRESENT;
-    Serial.print(F("[CAR] Arrival detected (distance: "));
+    Serial.print(F("[CAR] North arrival detected (distance: "));
     Serial.print(measure);
     Serial.println(F(" mm)"));
 
-    // If light is green, transition to yellow (car is passing through)
-    // Otherwise, request green (car is waiting at red)
-    if (currentState == LIGHT_GREEN) {
-      setPhase(LIGHT_YELLOW, "Car passing");
-    } else {
-      requestGreenPhase("Car arrival");
+    // If E/W is green, North car arrival blocks E/W, so end E/W green phase
+    if (currentState == A_GREEN_B_RED) {
+      setPhase(A_YELLOW_B_RED, "North car arriving");
     }
   }
   else if (!carPresent && carState == CAR_PRESENT) {
-    // Car departure detected
+    // North car departure detected
     carState = NO_CAR;
     carCount++;
-    Serial.print(F("[CAR] Departure detected - Total cars: "));
+    Serial.print(F("[CAR] North departure detected - Total cars: "));
     Serial.println(carCount);
+
+    // If North is green, North car departure means car has passed, so end North green phase
+    if (currentState == A_RED_B_GREEN) {
+      setPhase(A_RED_B_YELLOW, "North car departing");
+    }
   }
 }
 
