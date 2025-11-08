@@ -9,25 +9,25 @@ ArduinoLEDMatrix matrix;
 uint8_t matrixBuffer[8][12];
 
 const uint8_t WALK_ICON[8][12] = {
-  {0,0,0,1,1,1,1,0,0,0,0,0},
-  {0,0,0,1,0,0,1,0,0,0,0,0},
-  {0,0,0,1,1,1,1,0,0,0,0,0},
-  {0,0,1,1,1,1,1,1,0,0,0,0},
-  {0,0,0,0,1,1,0,0,0,0,0,0},
-  {0,0,0,0,1,1,0,0,1,0,0,0},
-  {0,0,0,1,1,1,0,1,0,0,0,0},
-  {0,0,1,0,0,0,1,0,0,0,0,0}
+  {0,0,0,0,1,1,1,0,0,0,0,0},  // Head
+  {0,0,0,1,1,1,1,1,0,0,0,0},  // Shoulders
+  {0,0,1,0,0,1,0,0,1,0,0,0},  // Arms spread (walking)
+  {0,0,0,0,1,1,1,0,0,0,0,0},  // Torso
+  {0,0,0,1,1,1,1,1,0,0,0,0},  // Hips
+  {0,0,1,1,0,0,0,1,0,0,0,0},  // Legs in stride
+  {0,0,1,0,0,0,0,1,1,0,0,0},  // Lower legs
+  {0,1,0,0,0,0,0,0,1,0,0,0}   // Feet
 };
 
 const uint8_t STOP_ICON[8][12] = {
-  {0,0,1,1,1,1,1,1,1,0,0,0},
-  {0,1,1,1,1,1,1,1,1,1,0,0},
-  {0,1,1,1,1,1,1,1,1,1,0,0},
-  {0,1,1,1,1,1,1,1,1,1,0,0},
-  {0,0,1,1,1,1,1,1,1,0,0,0},
-  {0,0,1,1,1,1,1,1,1,0,0,0},
-  {0,0,1,1,1,1,1,1,1,0,0,0},
-  {0,0,1,1,1,1,1,1,1,0,0,0}
+  {0,0,1,0,1,0,1,0,1,0,0,0},  // Fingertips
+  {0,0,1,0,1,0,1,0,1,0,0,0},  // Fingers
+  {0,0,1,0,1,0,1,0,1,0,0,0},  // Fingers
+  {0,1,1,1,1,1,1,1,1,1,0,0},  // Top of palm (fingers join)
+  {0,1,1,1,1,1,1,1,1,1,0,0},  // Palm
+  {0,0,1,1,1,1,1,1,1,0,0,0},  // Palm
+  {0,0,1,1,1,1,1,1,1,0,0,0},  // Lower palm
+  {0,0,0,1,1,1,1,1,0,0,0,0}   // Wrist
 };
 
 const uint8_t DIGIT_FONT[10][7][5] = {
@@ -144,6 +144,8 @@ const unsigned long MAX_GREEN_NORTH_MS = 15000; // maximum time North green can 
 const unsigned long GAP_OUT_TIME_MS = 2000;     // time with no car to end North green (after min)
 const unsigned long WALK_SOLID_MS = 3000;
 const int WALK_COUNTDOWN_SECONDS = 12;
+const unsigned long COUNTDOWN_BLANK_MS = 200;  // Blank display for last 100ms of each second
+const unsigned long CAR_COUNT_DISPLAY_MS = 3000;  // Show car count for 5 seconds
 
 enum LightState {
   ALL_RED,           // Both signals red
@@ -165,6 +167,8 @@ bool northGreenNext = false;  // Track which direction gets green after ALL_RED
 bool pedCountdownActive = false;  // Track if pedestrian countdown is active
 unsigned long countdownStartTime = 0;  // When countdown started
 unsigned long lastCarDetectedTime = 0;  // Last time a car was detected during North green
+bool showingCarCount = false;  // Track if car count is being displayed
+unsigned long carCountDisplayStartTime = 0;  // When car count display started
 
 unsigned long stateDurationMs(LightState state) {
   switch (state) {
@@ -230,7 +234,46 @@ void showCountdownNumber(int value) {
   matrix.renderBitmap(matrixBuffer, 8, 12);
 }
 
+void blankMatrix() {
+  clearMatrixBuffer();
+  matrix.renderBitmap(matrixBuffer, 8, 12);
+}
+
+void showCarCount(unsigned long count) {
+  clearMatrixBuffer();
+  // Display car count - handle up to 999 cars
+  if (count >= 100) {
+    int hundreds = (count / 100) % 10;
+    int tens = (count / 10) % 10;
+    int ones = count % 10;
+    drawDigitToBuffer(hundreds, 0);
+    drawDigitToBuffer(tens, 4);
+    drawDigitToBuffer(ones, 8);
+  } else if (count >= 10) {
+    int tens = count / 10;
+    int ones = count % 10;
+    drawDigitToBuffer(tens, 2);
+    drawDigitToBuffer(ones, 7);
+  } else {
+    drawDigitToBuffer(count, 4);
+  }
+  matrix.renderBitmap(matrixBuffer, 8, 12);
+}
+
 void updatePedestrianDisplay(unsigned long now) {
+  // Check if we're displaying car count (button C pressed)
+  if (showingCarCount) {
+    unsigned long elapsed = now - carCountDisplayStartTime;
+    if (elapsed >= CAR_COUNT_DISPLAY_MS) {
+      // Timeout - stop showing car count and resume of normal display
+      showingCarCount = false;
+      lastCountdownValue = -1;  // Force redraw of normal display
+    } else {
+      // Still showing car count
+      return;
+    }
+  }
+
   // If not E/W green, show STOP and reset countdown
   if (currentState != A_GREEN_B_RED) {
     if (pedDisplayMode != PED_STOP) {
@@ -255,6 +298,7 @@ void updatePedestrianDisplay(unsigned long now) {
     unsigned long currentTime = millis();
     unsigned long elapsed = currentTime - countdownStartTime;
     int remaining = WALK_COUNTDOWN_SECONDS - (int)(elapsed / 1000);
+    unsigned long msWithinSecond = elapsed % 1000;
 
     Serial.print(F("[PED DEBUG] elapsed="));
     Serial.print(elapsed);
@@ -262,11 +306,22 @@ void updatePedestrianDisplay(unsigned long now) {
     Serial.println(remaining);
 
     if (remaining > 0) {
-      // Show countdown number
-      if (pedDisplayMode != PED_COUNTDOWN || remaining != lastCountdownValue) {
-        showCountdownNumber(remaining);
-        pedDisplayMode = PED_COUNTDOWN;
-        lastCountdownValue = remaining;
+      // Check if we should blank the display (last 200ms of each second)
+      bool shouldBlank = (msWithinSecond >= (1000 - COUNTDOWN_BLANK_MS));
+
+      if (shouldBlank) {
+        // Blank the display for visual pulse effect
+        if (pedDisplayMode != PED_COUNTDOWN || lastCountdownValue != -2) {
+          blankMatrix();
+          lastCountdownValue = -2;  // Use -2 to indicate blank state
+        }
+      } else {
+        // Show countdown number
+        if (pedDisplayMode != PED_COUNTDOWN || remaining != lastCountdownValue) {
+          showCountdownNumber(remaining);
+          pedDisplayMode = PED_COUNTDOWN;
+          lastCountdownValue = remaining;
+        }
       }
     } else {
       // Countdown finished - show STOP and trigger E/W yellow
@@ -547,7 +602,12 @@ void serviceButtons() {
     forceGreenPhase("Button B");
   }
   if (buttons.isPressed('C')) {
-    forceGreenPhase("Button C");
+    // Button C shows car count on LED matrix
+    showingCarCount = true;
+    carCountDisplayStartTime = millis();
+    showCarCount(carCount);
+    Serial.print(F("[INFO] Displaying car count: "));
+    Serial.println(carCount);
   }
 }
 
