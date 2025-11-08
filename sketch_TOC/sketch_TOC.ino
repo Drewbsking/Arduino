@@ -159,6 +159,8 @@ enum CarState { NO_CAR, CAR_PRESENT };
 CarState carState = NO_CAR;
 unsigned long carCount = 0;
 bool northGreenNext = false;  // Track which direction gets green after ALL_RED
+bool pedCountdownActive = false;  // Track if pedestrian countdown is active
+unsigned long countdownStartTime = 0;  // When countdown started
 
 unsigned long stateDurationMs(LightState state) {
   switch (state) {
@@ -225,34 +227,53 @@ void showCountdownNumber(int value) {
 }
 
 void updatePedestrianDisplay(unsigned long now) {
-  // Show WALK when Signal A is green, STOP otherwise
+  // If not E/W green, show STOP and reset countdown
   if (currentState != A_GREEN_B_RED) {
     if (pedDisplayMode != PED_STOP) {
       renderIcon(STOP_ICON);
       pedDisplayMode = PED_STOP;
       lastCountdownValue = -1;
     }
+    pedCountdownActive = false;  // Reset countdown when not E/W green
     return;
   }
 
-  unsigned long elapsed = now - stateChangedAt;
-  if (elapsed < WALK_SOLID_MS) {
+  // E/W is green
+  if (!pedCountdownActive) {
+    // No countdown active - show WALK solid
     if (pedDisplayMode != PED_WALK) {
       renderIcon(WALK_ICON);
       pedDisplayMode = PED_WALK;
-      lastCountdownValue = WALK_COUNTDOWN_SECONDS;
+      lastCountdownValue = -1;
     }
-    return;
-  }
+  } else {
+    // Countdown active - calculate remaining time using current time
+    unsigned long currentTime = millis();
+    unsigned long elapsed = currentTime - countdownStartTime;
+    int remaining = WALK_COUNTDOWN_SECONDS - (int)(elapsed / 1000);
 
-  unsigned long countdownElapsed = elapsed - WALK_SOLID_MS;
-  int remaining = WALK_COUNTDOWN_SECONDS - (int)(countdownElapsed / 1000);
-  if (remaining < 0) remaining = 0;
+    Serial.print(F("[PED DEBUG] elapsed="));
+    Serial.print(elapsed);
+    Serial.print(F("ms, remaining="));
+    Serial.println(remaining);
 
-  if (pedDisplayMode != PED_COUNTDOWN || remaining != lastCountdownValue) {
-    showCountdownNumber(remaining);
-    pedDisplayMode = PED_COUNTDOWN;
-    lastCountdownValue = remaining;
+    if (remaining > 0) {
+      // Show countdown number
+      if (pedDisplayMode != PED_COUNTDOWN || remaining != lastCountdownValue) {
+        showCountdownNumber(remaining);
+        pedDisplayMode = PED_COUNTDOWN;
+        lastCountdownValue = remaining;
+      }
+    } else {
+      // Countdown finished - show STOP and trigger E/W yellow
+      if (pedDisplayMode != PED_STOP) {
+        renderIcon(STOP_ICON);
+        pedDisplayMode = PED_STOP;
+        lastCountdownValue = -1;
+        pedCountdownActive = false;
+        setPhase(A_YELLOW_B_RED, "Pedestrian countdown finished");
+      }
+    }
   }
 }
 
@@ -440,9 +461,11 @@ void serviceDistanceSensor() {
     Serial.print(measure);
     Serial.println(F(" mm)"));
 
-    // If E/W is green, North car arrival blocks E/W, so end E/W green phase
-    if (currentState == A_GREEN_B_RED) {
-      setPhase(A_YELLOW_B_RED, "North car arriving");
+    // If E/W is green, start pedestrian countdown (don't immediately trigger yellow)
+    if (currentState == A_GREEN_B_RED && !pedCountdownActive) {
+      pedCountdownActive = true;
+      countdownStartTime = millis();
+      Serial.println(F("[PED] Countdown started for E/W pedestrians"));
     }
   }
   else if (!carPresent && carState == CAR_PRESENT) {
