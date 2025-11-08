@@ -139,6 +139,9 @@ const uint8_t SIGNAL_B_YELLOW = 1;
 const uint8_t SIGNAL_B_GREEN  = 0;
 const int FORCE_GREEN_THRESHOLD_MM = 30;        // force green when an object is this close
 const unsigned long MIN_RED_DURATION_MS = 7000; // minimum time red must stay on before allowing green request
+const unsigned long MIN_GREEN_NORTH_MS = 7000;  // minimum time North green must stay on
+const unsigned long MAX_GREEN_NORTH_MS = 15000; // maximum time North green can stay on
+const unsigned long GAP_OUT_TIME_MS = 2000;     // time with no car to end North green (after min)
 const unsigned long WALK_SOLID_MS = 3000;
 const int WALK_COUNTDOWN_SECONDS = 12;
 
@@ -161,6 +164,7 @@ unsigned long carCount = 0;
 bool northGreenNext = false;  // Track which direction gets green after ALL_RED
 bool pedCountdownActive = false;  // Track if pedestrian countdown is active
 unsigned long countdownStartTime = 0;  // When countdown started
+unsigned long lastCarDetectedTime = 0;  // Last time a car was detected during North green
 
 unsigned long stateDurationMs(LightState state) {
   switch (state) {
@@ -327,6 +331,11 @@ void setPhase(LightState next, const char* reason) {
   showTrafficLight(currentState);
   updatePedestrianDisplay(stateChangedAt);
 
+  // Initialize car detection time when North green starts
+  if (next == A_RED_B_GREEN) {
+    lastCarDetectedTime = stateChangedAt;
+  }
+
   Serial.print(F("[STATE] "));
   if (reason != nullptr) {
     Serial.print(reason);
@@ -369,8 +378,20 @@ void advanceTrafficLight() {
 }
 
 void updateTrafficLight(unsigned long now) {
-  // Green phases stay on indefinitely until a car arrives
-  if (currentState == A_GREEN_B_RED || currentState == A_RED_B_GREEN) {
+  // E/W Green stays on indefinitely until a car arrives
+  if (currentState == A_GREEN_B_RED) {
+    return;
+  }
+
+  // North green has maximum time limit
+  if (currentState == A_RED_B_GREEN) {
+    unsigned long greenDuration = now - stateChangedAt;
+    if (greenDuration >= MAX_GREEN_NORTH_MS) {
+      Serial.print(F("[TIMER] North green maximum reached ("));
+      Serial.print(MAX_GREEN_NORTH_MS / 1000);
+      Serial.println(F("s) - forcing yellow"));
+      setPhase(A_RED_B_YELLOW, "North max green time");
+    }
     return;
   }
 
@@ -461,6 +482,15 @@ void serviceDistanceSensor() {
     Serial.print(measure);
     Serial.println(F(" mm)"));
 
+    // Track car detection time during North green (for extension logic)
+    if (currentState == A_RED_B_GREEN) {
+      lastCarDetectedTime = millis();
+      unsigned long greenDuration = lastCarDetectedTime - stateChangedAt;
+      Serial.print(F("[CAR] North green extended - duration: "));
+      Serial.print(greenDuration / 1000);
+      Serial.println(F("s"));
+    }
+
     // If E/W is green, start pedestrian countdown (don't immediately trigger yellow)
     if (currentState == A_GREEN_B_RED && !pedCountdownActive) {
       pedCountdownActive = true;
@@ -475,9 +505,32 @@ void serviceDistanceSensor() {
     Serial.print(F("[CAR] North departure detected - Total cars: "));
     Serial.println(carCount);
 
-    // If North is green, North car departure means car has passed, so end North green phase
+    // If North is green, check if we can end the green phase
     if (currentState == A_RED_B_GREEN) {
-      setPhase(A_RED_B_YELLOW, "North car departing");
+      unsigned long now = millis();
+      unsigned long greenDuration = now - stateChangedAt;
+      unsigned long timeSinceLastCar = now - lastCarDetectedTime;
+
+      // Must meet minimum green time
+      if (greenDuration >= MIN_GREEN_NORTH_MS) {
+        // After minimum, end green if gap time exceeded or approaching max
+        if (timeSinceLastCar >= GAP_OUT_TIME_MS || greenDuration >= MAX_GREEN_NORTH_MS) {
+          Serial.print(F("[CAR] North green ending - duration: "));
+          Serial.print(greenDuration / 1000);
+          Serial.println(F("s"));
+          setPhase(A_RED_B_YELLOW, "North car departing");
+        } else {
+          Serial.print(F("[CAR] North green extended - recent car detected "));
+          Serial.print(timeSinceLastCar / 1000);
+          Serial.println(F("s ago"));
+        }
+      } else {
+        Serial.print(F("[CAR] North car departed but minimum green not met ("));
+        Serial.print(greenDuration / 1000);
+        Serial.print(F("s / "));
+        Serial.print(MIN_GREEN_NORTH_MS / 1000);
+        Serial.println(F("s)"));
+      }
     }
   }
 }
