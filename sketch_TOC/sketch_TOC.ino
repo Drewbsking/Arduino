@@ -170,6 +170,14 @@ const uint8_t SIGNAL_A_GREEN  = 5;
 const uint8_t SIGNAL_B_RED    = 2;
 const uint8_t SIGNAL_B_YELLOW = 1;
 const uint8_t SIGNAL_B_GREEN  = 0;
+
+// Full-size traffic signal relay control pins (mirrors Signal B)
+// ⚠️ WARNING: These relays control 120V AC - HIGH VOLTAGE - LETHAL!
+// Use proper electrical enclosure and follow all safety guidelines
+const uint8_t RELAY_RED    = 9;   // Controls red light via relay
+const uint8_t RELAY_YELLOW = 10;  // Controls yellow light via relay
+const uint8_t RELAY_GREEN  = 11;  // Controls green light via relay
+
 const int FORCE_GREEN_THRESHOLD_MM = 30;        // force green when an object is this close
 const unsigned long MIN_RED_DURATION_MS = 7000; // minimum time red must stay on before allowing green request
 const unsigned long MIN_GREEN_NORTH_MS = 7000;  // minimum time North green must stay on
@@ -214,8 +222,6 @@ unsigned long lastFlashChange = 0;  // When flash last changed state
 
 // Animation mode variables (Button A)
 bool animationMode = false;  // Track if in animation mode
-enum AnimationPhase { ANIM_LIGHT_SHOW, ANIM_TEXT_SCROLL };
-AnimationPhase animationPhase = ANIM_LIGHT_SHOW;
 int lightShowColorIndex = 0;  // Current color in the rainbow sequence
 unsigned long lastLightShowUpdate = 0;  // When color last changed
 int textScrollPosition = 0;  // Horizontal scroll position for text
@@ -401,8 +407,16 @@ void updateFlashMode(unsigned long now) {
       // Lights ON: E/W amber, North red
       pixels.set(SIGNAL_A_YELLOW, 255, 110, 0, PIXEL_BRIGHTNESS_AMBER);
       pixels.set(SIGNAL_B_RED, 255, 0, 0, PIXEL_BRIGHTNESS_RED);
+      // Full-size signal: flash red light
+      digitalWrite(RELAY_RED, HIGH);
+      digitalWrite(RELAY_YELLOW, LOW);
+      digitalWrite(RELAY_GREEN, LOW);
+    } else {
+      // Lights OFF: all dark (already cleared)
+      digitalWrite(RELAY_RED, LOW);
+      digitalWrite(RELAY_YELLOW, LOW);
+      digitalWrite(RELAY_GREEN, LOW);
     }
-    // Lights OFF: all dark (already cleared)
     pixels.show();
   }
 }
@@ -432,17 +446,10 @@ void updateLightShow(unsigned long now) {
     }
     pixels.show();
 
-    // Advance to next color (0-7 cycle)
+    // Advance to next color (0-7 cycle, then loop)
     lightShowColorIndex++;
     if (lightShowColorIndex >= 8) {
-      // Completed a full rainbow cycle - switch to text scroll phase
-      lightShowColorIndex = 0;
-      animationPhase = ANIM_TEXT_SCROLL;
-      textScrollPosition = 12;  // Start text off-screen to the right
-      lastTextScrollUpdate = now;
-      clearPixels();
-      pixels.show();
-      Serial.println(F("[ANIM] Light show complete - starting text scroll"));
+      lightShowColorIndex = 0;  // Loop back to start of rainbow
     }
   }
 }
@@ -508,11 +515,8 @@ void updateTextScroll(unsigned long now) {
 
     // Check if scroll is complete (entire message has scrolled off left side)
     if (textScrollPosition < -totalWidth) {
-      // Text scroll complete - loop back to light show
-      animationPhase = ANIM_LIGHT_SHOW;
-      lightShowColorIndex = 0;
-      lastLightShowUpdate = now;
-      Serial.println(F("[ANIM] Text scroll complete - restarting light show"));
+      // Text scroll complete - loop back to beginning
+      textScrollPosition = 12;  // Start text off-screen to the right
     }
   }
 }
@@ -550,6 +554,37 @@ void showTrafficLight(LightState state) {
   pixels.show();
 }
 
+void updateFullTrafficLight(LightState state) {
+  // Control full-size traffic signal via relays to mirror Signal B (North signal)
+  // HIGH = relay closed = power flows to bulb = light ON
+  // LOW = relay open = no power = light OFF
+
+  // Turn off all relays first
+  digitalWrite(RELAY_RED, LOW);
+  digitalWrite(RELAY_YELLOW, LOW);
+  digitalWrite(RELAY_GREEN, LOW);
+
+  // Turn on appropriate relay based on Signal B state
+  switch (state) {
+    case ALL_RED:
+    case A_GREEN_B_RED:
+    case A_YELLOW_B_RED:
+      // Signal B is RED
+      digitalWrite(RELAY_RED, HIGH);
+      break;
+
+    case A_RED_B_GREEN:
+      // Signal B is GREEN
+      digitalWrite(RELAY_GREEN, HIGH);
+      break;
+
+    case A_RED_B_YELLOW:
+      // Signal B is YELLOW
+      digitalWrite(RELAY_YELLOW, HIGH);
+      break;
+  }
+}
+
 const char* stateName(LightState state) {
   switch (state) {
     case ALL_RED:        return "ALL RED";
@@ -565,6 +600,7 @@ void setPhase(LightState next, const char* reason) {
   currentState = next;
   stateChangedAt = millis();
   showTrafficLight(currentState);
+  updateFullTrafficLight(currentState);  // Update full-size traffic signal
   updatePedestrianDisplay(stateChangedAt);
 
   // Initialize car detection time when North green starts
@@ -696,6 +732,15 @@ void setup() {
   }
   buttons.setLeds(true, true, true);
 
+  // Initialize relay control pins for full-size traffic signal
+  pinMode(RELAY_RED, OUTPUT);
+  pinMode(RELAY_YELLOW, OUTPUT);
+  pinMode(RELAY_GREEN, OUTPUT);
+  // Start with all relays OFF (LOW = relay open, no power to bulbs)
+  digitalWrite(RELAY_RED, LOW);
+  digitalWrite(RELAY_YELLOW, LOW);
+  digitalWrite(RELAY_GREEN, LOW);
+
   setPhase(A_GREEN_B_RED, "Startup");
   Serial.println("Tiles initialized. Two-phase traffic signal active.");
   Serial.println("E/W signal is main road (default green). N signal actuated by sensor.");
@@ -777,13 +822,18 @@ void serviceButtons() {
   }
 
   if (buttons.isPressed('A')) {
-    // Button A toggles animation mode (light show + text scroll)
+    // Button A toggles animation mode (light show + text scroll simultaneously)
     animationMode = !animationMode;
     if (animationMode) {
-      Serial.println(F("[ANIM] Entering animation mode - light show starting"));
-      animationPhase = ANIM_LIGHT_SHOW;
+      Serial.println(F("[ANIM] Entering animation mode - light show and name scroll"));
       lightShowColorIndex = 0;
       lastLightShowUpdate = millis();
+      textScrollPosition = 12;  // Start text off-screen to the right
+      lastTextScrollUpdate = millis();
+      // Turn off all relays during animation mode (safety)
+      digitalWrite(RELAY_RED, LOW);
+      digitalWrite(RELAY_YELLOW, LOW);
+      digitalWrite(RELAY_GREEN, LOW);
     } else {
       Serial.println(F("[ANIM] Exiting animation mode - returning to normal operation"));
       // Exit animation mode: go to ALL_RED then E/W green
@@ -798,6 +848,10 @@ void serviceButtons() {
       Serial.println(F("[FLASH] Entering flash mode - E/W amber, N red (MUTCD 60 flashes/min)"));
       lastFlashChange = millis();
       flashState = false;  // Start with lights off
+      // Turn off all relays initially
+      digitalWrite(RELAY_RED, LOW);
+      digitalWrite(RELAY_YELLOW, LOW);
+      digitalWrite(RELAY_GREEN, LOW);
     } else {
       Serial.println(F("[FLASH] Exiting flash mode - returning to normal operation"));
       // Exit flash mode: go to ALL_RED then E/W green
@@ -821,12 +875,9 @@ void loop() {
   serviceButtons();  // Check buttons first
 
   if (animationMode) {
-    // In animation mode - run light show and text scroll
-    if (animationPhase == ANIM_LIGHT_SHOW) {
-      updateLightShow(now);
-    } else {
-      updateTextScroll(now);
-    }
+    // In animation mode - run light show and text scroll simultaneously
+    updateLightShow(now);
+    updateTextScroll(now);
   } else if (flashMode) {
     // In flash mode - MUTCD compliant flashing
     updateFlashMode(now);
